@@ -1,5 +1,7 @@
 ﻿using LibraryApi.Domain;
+using LibraryApi.Filters;
 using LibraryApi.Models;
+using LibraryApi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System;
@@ -12,11 +14,15 @@ namespace LibraryApi.Controllers
     public class ReservationsController : ControllerBase
     {
         LibraryDataContext Context;
+        ISendReservationToTheQueue Queue;
 
-        public ReservationsController(LibraryDataContext context)
+        public ReservationsController(LibraryDataContext context, ISendReservationToTheQueue queue)
         {
             Context = context;
+            Queue = queue;
         }
+
+
 
 
         // GET /reservations - returns all the reservations (pending, approved, denied)
@@ -37,31 +43,30 @@ namespace LibraryApi.Controllers
         }
         // POST /reservations - add a reservation
         [HttpPost("/reservations")]
+        [ValidateModel]
         public async Task<ActionResult<ReservationItem>> AddReservation([FromBody] PostReservationRequest item)
         {
-            if (!ModelState.IsValid)
+            var reservation = new Reservation
             {
-                return BadRequest(ModelState);
-            } else
-            {
-                var reservation = new Reservation
-                {
-                    For = item.For,
-                    Books = item.Books,
-                    Status = ReservationStatus.Pending
-                };
-                Context.Reservations.Add(reservation);
-                await Context.SaveChangesAsync();
+                For = item.For,
+                Books = item.Books,
+                Status = ReservationStatus.Pending
+            };
+            Context.Reservations.Add(reservation);
+            await Context.SaveChangesAsync();
 
-                var response = new ReservationItem
-                {
-                    Id = reservation.Id,
-                    For = reservation.For,
-                    Books = reservation.Books,
-                    Status = reservation.Status
-                };
-                return Ok(response); 
-            }
+            var response = new ReservationItem
+            {
+                Id = reservation.Id,
+                For = reservation.For,
+                Books = reservation.Books,
+                Status = reservation.Status
+            };
+
+            // Write it to the Queue for the background worker (Coming Soon!) to process!
+            Queue.SendReservation(response);
+            return Ok(response);
+
         }
 
         // GET /reservations/approved - returns all the approved reservations
@@ -88,10 +93,11 @@ namespace LibraryApi.Controllers
 
             var stored = await Context.Reservations
                 .SingleOrDefaultAsync(r => r.Id == reservation.Id);
-            if(stored == null)
+            if (stored == null)
             {
                 return BadRequest("No reservation with that Id.");
-            } else
+            }
+            else
             {
                 stored.Status = ReservationStatus.Approved;
                 await Context.SaveChangesAsync();
